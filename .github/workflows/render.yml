@@ -1,0 +1,106 @@
+name: Render Rumikesh intro
+
+on:
+  workflow_dispatch:
+    inputs:
+      theme:
+        description: "Logo / colour variant"
+        type: choice
+        options: [pink, blue]
+        default: pink
+      tagline:
+        description: "Tagline typed under the logo"
+        type: string
+        default: "Every Threat. One Shield."
+      url:
+        description: "Website shown at the end"
+        type: string
+        default: "rumikesh.com"
+      quality:
+        description: "CRF (lower = higher quality, bigger file)"
+        type: choice
+        options: ["14", "18", "23"]
+        default: "14"
+  push:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "public/**"
+      - "scripts/**"
+      - "package.json"
+      - ".github/workflows/render.yml"
+
+concurrency:
+  group: render-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install system libraries for headless Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm-dev \
+            libasound2t64 libxrandr2 libxkbcommon-dev libxfixes3 libxcomposite1 \
+            libxdamage1 libpango-1.0-0 libcairo2 libcups2 fonts-noto-color-emoji
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate soundtrack
+        run: node scripts/generate-audio.mjs
+
+      - name: Prepare render props
+        env:
+          THEME: ${{ inputs.theme || 'pink' }}
+          TAGLINE: ${{ inputs.tagline || 'Every Threat. One Shield.' }}
+          SITE_URL: ${{ inputs.url || 'rumikesh.com' }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            fs.writeFileSync("props.json", JSON.stringify({
+              theme: process.env.THEME,
+              tagline: process.env.TAGLINE,
+              url: process.env.SITE_URL,
+              music: true
+            }, null, 2));
+          '
+          cat props.json
+
+      - name: Download Remotion browser
+        run: npx remotion browser ensure
+
+      - name: Render video
+        env:
+          REMOTION_LICENSE_KEY: ${{ secrets.REMOTION_LICENSE_KEY }}
+          CRF: ${{ inputs.quality || '14' }}
+        run: |
+          LICENSE_ARGS=()
+          if [ -n "$REMOTION_LICENSE_KEY" ]; then LICENSE_ARGS=(--license-key="$REMOTION_LICENSE_KEY"); fi
+          npx remotion render RumikeshIntro out/rumikesh-intro.mp4 \
+            --props=./props.json \
+            --codec=h264 \
+            --crf="$CRF" \
+            --audio-codec=aac \
+            --audio-bitrate=320k \
+            --pixel-format=yuv420p \
+            --concurrency=100% \
+            --timeout=120000 \
+            "${LICENSE_ARGS[@]}"
+
+      - name: Upload video
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumikesh-intro-${{ inputs.theme || 'pink' }}
+          path: out/rumikesh-intro.mp4
+          retention-days: 30
